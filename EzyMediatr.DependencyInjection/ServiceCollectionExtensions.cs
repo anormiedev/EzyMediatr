@@ -83,8 +83,17 @@ public sealed class EzyMediatrBuilder
 
     public EzyMediatrOptions Options { get; } = new();
 
+    public EzyMediatrBuilder UseDapper(Func<IDbConnection> connectionFactory)
+    {
+        _services.AddScoped<IDbConnection>(_ => connectionFactory());
+        Options.UseDapper(_ => connectionFactory());
+        ApplyUnitOfWork();
+        return this;
+    }
+
     public EzyMediatrBuilder UseDapper(Func<IServiceProvider, IDbConnection> connectionFactory)
     {
+        _services.AddScoped(connectionFactory);
         Options.UseDapper(connectionFactory);
         ApplyUnitOfWork();
         return this;
@@ -92,6 +101,15 @@ public sealed class EzyMediatrBuilder
 
     public EzyMediatrBuilder UseEfCore<TContext>() where TContext : DbContext
     {
+        Options.UseEfCore<TContext>();
+        ApplyUnitOfWork();
+        return this;
+    }
+
+    public EzyMediatrBuilder UseEfCore<TContext>(Action<DbContextOptionsBuilder> optionsAction) where TContext : DbContext
+    {
+        _services.AddDbContextFactory<TContext>(optionsAction);
+        _services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
         Options.UseEfCore<TContext>();
         ApplyUnitOfWork();
         return this;

@@ -160,6 +160,12 @@ await mediator.Publish(new OrderCreated(orderId));
 - `INotificationHandler<TNotification>`: handles notifications.
 - `ITransactionalRequest`: marker to run the handler inside a unit of work/transaction (Dapper or EF Core). If you call `.WrapEveryRequest()`, you don’t need the marker—everything is transactional.
 
+
+## System Architecture 
+
+![alt text](image.png)
+
+
 ## Notes and extensibility
 - If you omit assemblies in `AddEzyMediatr()`, the current AppDomain is scanned.
 - Add logging/telemetry by implementing `IPipelineBehavior<TRequest,TResponse>`,
