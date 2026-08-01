@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>EzyMediatr.DependencyInjection</RootNamespace>
     <PackageId>EzyMediatr</PackageId>
-    <Version>0.0.1</Version>
+    <Version>0.0.2</Version>
     <Authors>A Normie Dev</Authors>
     <Company>A Normie Dev's Company</Company>
     <Description>Unified EzyMediatr mediator package including core, validation, and unit-of-work DI extensions.</Description>
