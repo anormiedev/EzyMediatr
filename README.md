@@ -201,16 +201,6 @@ services.AddEzyMediatr(typeof(PingHandler).Assembly)
 
 An `IUnitOfWork` owns the transaction boundary: it executes the pipeline operation, commits on success, rolls back on failure, and is disposed after the dispatch.
 
-## Runnable sample API
-
-[`EzyMediatr.SampleApi`](EzyMediatr.SampleApi/README.md) is a controller-based, CQRS-organized Web API demonstrating validation, request/stream/notification behaviors, processors, Dapper, explicit transactional requests, global request wrapping, commit, and rollback using a self-contained SQLite database.
-
-```bash
-dotnet run --project EzyMediatr.SampleApi/EzyMediatr.SampleApi.csproj
-```
-
-Open `http://localhost:5000/swagger` to exercise every sample endpoint through Swagger UI.
-
 ## Build and pack
 
 ```bash
