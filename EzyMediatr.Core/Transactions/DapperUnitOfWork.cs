@@ -3,39 +3,55 @@ using System.Data.Common;
 
 namespace EzyMediatr.Core.Transactions;
 
-public sealed class DapperUnitOfWork : IUnitOfWork
+public sealed class DapperUnitOfWork : IUnitOfWork, ISqlUnitOfWork
 {
     private readonly IDbConnection _connection;
     private IDbTransaction? _transaction;
 
+    public IDbConnection Connection => _connection;
+    public IDbTransaction? Transaction => _transaction;
+
     public DapperUnitOfWork(IDbConnection connection)
     {
-        _connection = connection;
+        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
     }
 
     public async Task<TResponse> ExecuteAsync<TResponse>(Func<CancellationToken, Task<TResponse>> operation, CancellationToken cancellationToken = default)
     {
-        await OpenIfNeededAsync(cancellationToken);
-
-        _transaction = _connection.BeginTransaction();
-
         try
         {
+            await OpenIfNeededAsync(cancellationToken);
+            _transaction = _connection.BeginTransaction();
             var response = await operation(cancellationToken);
             _transaction.Commit();
             return response;
         }
         catch
         {
-            _transaction?.Rollback();
+            try
+            {
+                _transaction?.Rollback();
+            }
+            catch
+            {
+                // Preserve the exception raised by the operation or commit.
+            }
+
             throw;
         }
     }
 
     public ValueTask DisposeAsync()
     {
-        _transaction?.Dispose();
-        _connection.Dispose();
+        try
+        {
+            _transaction?.Dispose();
+        }
+        finally
+        {
+            _connection.Dispose();
+        }
+
         return ValueTask.CompletedTask;
     }
 
@@ -63,7 +79,7 @@ public sealed class DapperUnitOfWorkFactory : IUnitOfWorkFactory
 
     public DapperUnitOfWorkFactory(Func<IDbConnection> connectionFactory)
     {
-        _connectionFactory = connectionFactory;
+        _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
     }
 
     public Task<IUnitOfWork> CreateAsync(CancellationToken cancellationToken = default)
