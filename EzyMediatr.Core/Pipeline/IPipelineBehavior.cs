@@ -12,12 +12,17 @@ public interface IStreamPipelineBehavior<in TRequest, TResponse> where TRequest 
     IAsyncEnumerable<TResponse> Handle(TRequest request, StreamHandlerDelegate<TResponse> next, CancellationToken cancellationToken);
 }
 
+public interface INotificationPipelineBehavior<in TNotification> where TNotification : INotification
+{
+    Task Handle(TNotification notification, NotificationHandlerDelegate next, CancellationToken cancellationToken);
+}
+
 public interface IRequestPreProcessor<in TRequest> where TRequest : IBaseRequest
 {
     Task Process(TRequest request, CancellationToken cancellationToken);
 }
 
-public interface IRequestPostProcessor<in TRequest, in TResponse> where TRequest : IBaseRequest
+public interface IRequestPostProcessor<in TRequest, in TResponse> where TRequest : IRequest<TResponse>
 {
     Task Process(TRequest request, TResponse response, CancellationToken cancellationToken);
 }
