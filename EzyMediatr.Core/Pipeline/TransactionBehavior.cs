@@ -1,29 +1,63 @@
 using EzyMediatr.Core.Abstractions;
+using EzyMediatr.Core.Internal;
 using EzyMediatr.Core.Transactions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EzyMediatr.Core.Pipeline;
 
-public class TransactionBehavior<TRequest, TResponse>(IServiceProvider serviceProvider, EzyMediatrOptions options) : IPipelineBehavior<TRequest, TResponse>
+public sealed class TransactionBehavior<TRequest, TResponse>(IServiceProvider serviceProvider, EzyMediatrOptions options) : IPipelineBehavior<TRequest, TResponse>
     where TRequest : IRequest<TResponse>
 {
 
-    public async Task<TResponse> Handle(
+    public Task<TResponse> Handle(
         TRequest request,
         RequestHandlerDelegate<TResponse> next,
         CancellationToken cancellationToken)
+        => Execute(request, next, serviceProvider, options, cancellationToken);
+
+    internal static Task<TResponse> Execute(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken)
     {
-        if (!options.WrapAllRequests && request is not ITransactionalRequest)
+        if (!IsRequired(request, options))
         {
-            return await next();
+            return next();
         }
 
-        if (options.UnitOfWorkSelector is null)
+        return ExecuteTransactional(request, next, serviceProvider, options, cancellationToken);
+    }
+
+    internal static bool IsRequired(TRequest request, EzyMediatrOptions options)
+        => options.WrapAllRequests || request is ITransactionalRequest;
+
+    internal static async Task<TResponse> ExecuteTransactional(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (options.UnitOfWorkFactory is null)
         {
             throw new InvalidOperationException("UnitOfWork is not configured. Call UseDapper/UseEfCore/UseUnitOfWorkFactory in AddEzyMediatr.");
         }
 
-        var factory = options.UnitOfWorkSelector(request, serviceProvider);
-        await using var uow = await factory.CreateAsync(cancellationToken);
-        return await uow.ExecuteAsync(_ => next(), cancellationToken);
+        await using var uow = await options.UnitOfWorkFactory(request, serviceProvider, cancellationToken);
+        var accessor = uow is ISqlUnitOfWork
+            ? serviceProvider.GetService<DapperUnitOfWorkAccessor>()
+            : null;
+        var previousUnitOfWork = accessor?.Push(uow);
+
+        try
+        {
+            return await uow.ExecuteAsync(_ => next(), cancellationToken);
+        }
+        finally
+        {
+            accessor?.Restore(previousUnitOfWork);
+        }
     }
 }
