@@ -10,7 +10,9 @@ using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 using System.Runtime.CompilerServices;
 
-BenchmarkSwitcher.FromTypes([typeof(DispatchBenchmarks)]).Run(args);
+BenchmarkSwitcher.FromTypes(
+    [typeof(DispatchBenchmarks), typeof(RegistrationBenchmarks), typeof(MediatorComparisonBenchmarks)])
+    .Run(args);
 
 [MemoryDiagnoser]
 [ShortRunJob]
@@ -20,6 +22,8 @@ public class DispatchBenchmarks
     private IServiceScope _scope = null!;
     private IMediator _mediator = null!;
     private PlainRequestHandler _directHandler = null!;
+    private BenchmarkNotificationHandler _directNotificationHandler = null!;
+    private BenchmarkStreamHandler _directStreamHandler = null!;
     private readonly PlainRequest _plainRequest = new();
     private readonly RequestWithBehavior _requestWithBehavior = new();
     private readonly ValidatedRequest _validatedRequest = new();
@@ -44,6 +48,8 @@ public class DispatchBenchmarks
         _scope = _provider.CreateScope();
         _mediator = _scope.ServiceProvider.GetRequiredService<IMediator>();
         _directHandler = new PlainRequestHandler();
+        _directNotificationHandler = new BenchmarkNotificationHandler();
+        _directStreamHandler = new BenchmarkStreamHandler();
     }
 
     [GlobalCleanup]
@@ -75,6 +81,9 @@ public class DispatchBenchmarks
     public Task PublishWithOneHandler() => _mediator.Publish(_notification);
 
     [Benchmark]
+    public Task DirectNotificationHandler() => _directNotificationHandler.Handle(_notification);
+
+    [Benchmark]
     public Task PublishWithOneBehavior() => _mediator.Publish(_notificationWithBehavior);
 
     [Benchmark]
@@ -82,6 +91,24 @@ public class DispatchBenchmarks
     {
         var count = 0;
         await foreach (var _ in _mediator.Stream(_streamRequest))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    [Benchmark]
+    public object CreateMediatedStream() => _mediator.Stream(_streamRequest);
+
+    [Benchmark]
+    public object CreateDirectStream() => _directStreamHandler.Handle(_streamRequest);
+
+    [Benchmark]
+    public async Task<int> DirectStreamOneItem()
+    {
+        var count = 0;
+        await foreach (var _ in _directStreamHandler.Handle(_streamRequest))
         {
             count++;
         }
@@ -99,6 +126,27 @@ public class DispatchBenchmarks
         }
 
         return count;
+    }
+}
+
+[MemoryDiagnoser]
+[ShortRunJob]
+public class RegistrationBenchmarks
+{
+    [Benchmark]
+    public int ExplicitAssembly()
+    {
+        var services = new ServiceCollection();
+        services.AddEzyMediatr(typeof(DispatchBenchmarks).Assembly);
+        return services.Count;
+    }
+
+    [Benchmark]
+    public int AutoDiscovery()
+    {
+        var services = new ServiceCollection();
+        services.AddEzyMediatr();
+        return services.Count;
     }
 }
 
