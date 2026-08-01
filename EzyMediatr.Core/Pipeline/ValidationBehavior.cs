@@ -1,29 +1,71 @@
 using FluentValidation;
 using EzyMediatr.Core.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EzyMediatr.Core.Pipeline;
 
-public class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidator<TRequest>> validators) : IPipelineBehavior<TRequest, TResponse>
+public sealed class ValidationBehavior<TRequest, TResponse>(IServiceProvider serviceProvider, EzyMediatrOptions options) : IPipelineBehavior<TRequest, TResponse>
     where TRequest : IRequest<TResponse>
 {
 
-    public async Task<TResponse> Handle(
+    public Task<TResponse> Handle(
         TRequest request,
         RequestHandlerDelegate<TResponse> next,
         CancellationToken cancellationToken)
-    {
-        if (validators.Any())
-        {
-            var context = new ValidationContext<TRequest>(request);
-            var results = await Task.WhenAll(validators.Select(v => v.ValidateAsync(context, cancellationToken)));
-            var failures = results.SelectMany(r => r.Errors).Where(f => f is not null).ToList();
+        => ValidateAndContinue(request, next, serviceProvider, options, cancellationToken);
 
-            if (failures.Count > 0)
+    internal static ValueTask Validate(
+        TRequest request,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!options.AddValidationBehavior)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        var registeredValidators = serviceProvider.GetServices<IValidator<TRequest>>();
+        var validators = registeredValidators as IValidator<TRequest>[]
+            ?? registeredValidators.ToArray();
+
+        return validators.Length == 0
+            ? ValueTask.CompletedTask
+            : new ValueTask(ValidateAll(request, validators, cancellationToken));
+    }
+
+    private static async Task ValidateAll(
+        TRequest request,
+        IValidator<TRequest>[] validators,
+        CancellationToken cancellationToken)
+    {
+        List<FluentValidation.Results.ValidationFailure>? failures = null;
+        var context = new ValidationContext<TRequest>(request);
+
+        foreach (var validator in validators)
+        {
+            var result = await validator.ValidateAsync(context, cancellationToken);
+            if (result.Errors.Count > 0)
             {
-                throw new ValidationException(failures);
+                failures ??= [];
+                failures.AddRange(result.Errors);
             }
         }
 
+        if (failures is not null)
+        {
+            throw new ValidationException(failures);
+        }
+    }
+
+    private static async Task<TResponse> ValidateAndContinue(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken)
+    {
+        await Validate(request, serviceProvider, options, cancellationToken);
         return await next();
     }
 }
