@@ -88,6 +88,48 @@ public sealed class MediatorBehaviorTests
     }
 
     [Fact]
+    public async Task Notification_behavior_can_short_circuit_without_resolving_handlers()
+    {
+        var services = CreateServices();
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+        var trace = scope.ServiceProvider.GetRequiredService<BehaviorTrace>();
+
+        await scope.ServiceProvider.GetRequiredService<IMediator>().Publish(new ShortCircuitedNotification());
+
+        Assert.Equal(["notification-short-circuit"], trace.Entries);
+    }
+
+    [Fact]
+    public async Task Duplicate_explicit_assemblies_are_scanned_once()
+    {
+        var services = new ServiceCollection();
+        var assembly = typeof(MediatorBehaviorTests).Assembly;
+        services.AddEzyMediatr(assembly, assembly);
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        var response = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new CancellationRequest());
+
+        Assert.Equal(1, response);
+    }
+
+    [Fact]
+    public async Task Open_generic_behaviors_registered_after_the_mediator_are_executed()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<OpenGenericBehaviorTrace>();
+        services.AddEzyMediatr(typeof(MediatorBehaviorTests).Assembly);
+        services.AddScoped(typeof(IPipelineBehavior<,>), typeof(OpenGenericBehavior<,>));
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new CancellationRequest());
+
+        Assert.True(scope.ServiceProvider.GetRequiredService<OpenGenericBehaviorTrace>().WasCalled);
+    }
+
+    [Fact]
     public async Task Cancellation_is_forwarded_to_pipeline_behaviors()
     {
         var services = CreateServices();
@@ -112,6 +154,25 @@ public sealed class MediatorBehaviorTests
     public sealed class BehaviorTrace
     {
         public List<string> Entries { get; } = [];
+    }
+
+    public sealed class OpenGenericBehaviorTrace
+    {
+        public bool WasCalled { get; set; }
+    }
+
+    public sealed class OpenGenericBehavior<TRequest, TResponse>(OpenGenericBehaviorTrace trace)
+        : IPipelineBehavior<TRequest, TResponse>
+        where TRequest : IRequest<TResponse>
+    {
+        public Task<TResponse> Handle(
+            TRequest request,
+            RequestHandlerDelegate<TResponse> next,
+            CancellationToken cancellationToken)
+        {
+            trace.WasCalled = true;
+            return next();
+        }
     }
 
     public sealed record BehaviorRequest : IRequest<int>;
@@ -157,10 +218,10 @@ public sealed class MediatorBehaviorTests
 
     public sealed class BehaviorRequestPreProcessor(BehaviorTrace trace) : IRequestPreProcessor<BehaviorRequest>
     {
-        public Task Process(BehaviorRequest request, CancellationToken cancellationToken)
+        public async Task Process(BehaviorRequest request, CancellationToken cancellationToken)
         {
+            await Task.Yield();
             trace.Entries.Add("pre");
-            return Task.CompletedTask;
         }
     }
 
@@ -175,10 +236,10 @@ public sealed class MediatorBehaviorTests
 
     public sealed class BehaviorRequestPostProcessor(BehaviorTrace trace) : IRequestPostProcessor<BehaviorRequest, int>
     {
-        public Task Process(BehaviorRequest request, int response, CancellationToken cancellationToken)
+        public async Task Process(BehaviorRequest request, int response, CancellationToken cancellationToken)
         {
+            await Task.Yield();
             trace.Entries.Add("post");
-            return Task.CompletedTask;
         }
     }
 
@@ -276,6 +337,31 @@ public sealed class MediatorBehaviorTests
         public Task Handle(FailingNotification notification, CancellationToken cancellationToken)
         {
             trace.Entries.Add("skipped-handler");
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed record ShortCircuitedNotification : INotification;
+
+    public sealed class ShortCircuitNotificationBehavior(BehaviorTrace trace)
+        : INotificationPipelineBehavior<ShortCircuitedNotification>
+    {
+        public Task Handle(
+            ShortCircuitedNotification notification,
+            NotificationHandlerDelegate next,
+            CancellationToken cancellationToken)
+        {
+            trace.Entries.Add("notification-short-circuit");
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class ShortCircuitedNotificationHandler(BehaviorTrace trace)
+        : INotificationHandler<ShortCircuitedNotification>
+    {
+        public Task Handle(ShortCircuitedNotification notification, CancellationToken cancellationToken)
+        {
+            trace.Entries.Add("notification-handler");
             return Task.CompletedTask;
         }
     }
