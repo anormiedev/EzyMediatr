@@ -8,58 +8,97 @@ namespace EzyMediatr.Core.Internal;
 
 internal abstract class NotificationHandlerWrapper
 {
-    public abstract Task Handle(INotification notification, IServiceProvider serviceProvider, CancellationToken cancellationToken);
+    public abstract Task Handle(
+        INotification notification,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class NotificationHandlerWrapper<TNotification> : NotificationHandlerWrapper
     where TNotification : INotification
 {
-    public override Task Handle(INotification notification, IServiceProvider serviceProvider, CancellationToken cancellationToken)
+    public override Task Handle(
+        INotification notification,
+        IServiceProvider serviceProvider,
+        EzyMediatrOptions options,
+        CancellationToken cancellationToken)
     {
         var typedNotification = (TNotification)notification;
 
-        Task ExecuteHandlers()
+        if ((options.GetPipelineFeatures<TNotification>() & PipelineFeatures.NotificationBehavior) == 0)
         {
-            var registeredHandlers = serviceProvider.GetServices<INotificationHandler<TNotification>>();
-            var handlers = registeredHandlers as INotificationHandler<TNotification>[]
-                ?? registeredHandlers.ToArray();
-
-            return handlers.Length switch
-            {
-                0 => Task.CompletedTask,
-                1 => handlers[0].Handle(typedNotification, cancellationToken),
-                _ => ExecuteSequentially(handlers)
-            };
+            return ExecuteHandlers(typedNotification, serviceProvider, cancellationToken);
         }
 
-        async Task ExecuteSequentially(INotificationHandler<TNotification>[] handlers)
-        {
-            foreach (var handler in handlers)
-            {
-                await handler.Handle(typedNotification, cancellationToken).ConfigureAwait(false);
-            }
-        }
+        return ExecuteWithBehaviors(typedNotification, serviceProvider, cancellationToken);
+    }
 
+    private static Task ExecuteWithBehaviors(
+        TNotification notification,
+        IServiceProvider serviceProvider,
+        CancellationToken cancellationToken)
+    {
         var registeredBehaviors = serviceProvider.GetServices<INotificationPipelineBehavior<TNotification>>();
         var behaviors = registeredBehaviors as INotificationPipelineBehavior<TNotification>[]
             ?? registeredBehaviors.ToArray();
 
         if (behaviors.Length == 0)
         {
-            return ExecuteHandlers();
+            return ExecuteHandlers(notification, serviceProvider, cancellationToken);
         }
 
-        NotificationHandlerDelegate handlerDelegate = ExecuteHandlers;
+        NotificationHandlerDelegate handlerDelegate = () =>
+            ExecuteHandlers(notification, serviceProvider, cancellationToken);
+
+        if (behaviors.Length == 1)
+        {
+            return behaviors[0].Handle(notification, handlerDelegate, cancellationToken);
+        }
 
         for (var index = behaviors.Length - 1; index >= 0; index--)
         {
             var behavior = behaviors[index];
             var next = handlerDelegate;
-            handlerDelegate = () => behavior.Handle(typedNotification, next, cancellationToken);
+            handlerDelegate = () => behavior.Handle(notification, next, cancellationToken);
         }
 
         return handlerDelegate();
     }
+
+    private static Task ExecuteHandlers(
+        TNotification notification,
+        IServiceProvider serviceProvider,
+        CancellationToken cancellationToken)
+    {
+        var registeredHandlers = serviceProvider.GetServices<INotificationHandler<TNotification>>();
+        var handlers = registeredHandlers as INotificationHandler<TNotification>[]
+            ?? registeredHandlers.ToArray();
+
+        return handlers.Length switch
+        {
+            0 => Task.CompletedTask,
+            1 => handlers[0].Handle(notification, cancellationToken),
+            _ => ExecuteSequentially(notification, handlers, cancellationToken)
+        };
+    }
+
+    private static async Task ExecuteSequentially(
+        TNotification notification,
+        INotificationHandler<TNotification>[] handlers,
+        CancellationToken cancellationToken)
+    {
+        foreach (var handler in handlers)
+        {
+            await handler.Handle(notification, cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
+internal static class NotificationHandlerWrapperCache<TNotification>
+    where TNotification : INotification
+{
+    public static readonly NotificationHandlerWrapper Instance = new NotificationHandlerWrapper<TNotification>();
 }
 
 internal static class NotificationHandlerWrapperFactory
