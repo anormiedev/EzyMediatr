@@ -18,9 +18,10 @@ public sealed class ValidationBehavior<TRequest, TResponse>(IServiceProvider ser
         TRequest request,
         IServiceProvider serviceProvider,
         EzyMediatrOptions options,
+        bool mayHaveValidators,
         CancellationToken cancellationToken)
     {
-        if (!options.AddValidationBehavior)
+        if (!options.AddValidationBehavior || !mayHaveValidators)
         {
             return ValueTask.CompletedTask;
         }
@@ -65,7 +66,8 @@ public sealed class ValidationBehavior<TRequest, TResponse>(IServiceProvider ser
         EzyMediatrOptions options,
         CancellationToken cancellationToken)
     {
-        await Validate(request, serviceProvider, options, cancellationToken);
-        return await next();
+        var mayHaveValidators = (options.GetPipelineFeatures<TRequest>() & PipelineFeatures.Validator) != 0;
+        await Validate(request, serviceProvider, options, mayHaveValidators, cancellationToken).ConfigureAwait(false);
+        return await next().ConfigureAwait(false);
     }
 }
