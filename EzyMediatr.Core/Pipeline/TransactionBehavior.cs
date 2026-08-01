@@ -40,20 +40,27 @@ public sealed class TransactionBehavior<TRequest, TResponse>(IServiceProvider se
         EzyMediatrOptions options,
         CancellationToken cancellationToken)
     {
+        var accessor = serviceProvider.GetService<UnitOfWorkAccessor>();
+        if (accessor?.Current is not null)
+        {
+            return await next().ConfigureAwait(false);
+        }
+
         if (options.UnitOfWorkFactory is null)
         {
             throw new InvalidOperationException("UnitOfWork is not configured. Call UseDapper/UseEfCore/UseUnitOfWorkFactory in AddEzyMediatr.");
         }
 
-        await using var uow = await options.UnitOfWorkFactory(request, serviceProvider, cancellationToken);
-        var accessor = uow is ISqlUnitOfWork
-            ? serviceProvider.GetService<DapperUnitOfWorkAccessor>()
-            : null;
+        var createdUnitOfWork = await options.UnitOfWorkFactory(request, serviceProvider, cancellationToken)
+            .ConfigureAwait(false);
+        var uow = createdUnitOfWork
+            ?? throw new InvalidOperationException("The configured unit-of-work factory returned null.");
+        await using var ownedUnitOfWork = uow;
         var previousUnitOfWork = accessor?.Push(uow);
 
         try
         {
-            return await uow.ExecuteAsync(_ => next(), cancellationToken);
+            return await uow.ExecuteAsync(_ => next(), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
