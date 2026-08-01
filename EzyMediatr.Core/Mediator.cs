@@ -14,12 +14,12 @@ public class Mediator(IServiceProvider serviceProvider, EzyMediatrOptions option
     {
     }
 
-    public async Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
+    public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var wrapper = RequestHandlerWrapperFactory<TResponse>.Create(request.GetType());
-        return await wrapper.Handle(request, serviceProvider, options, cancellationToken).ConfigureAwait(false);
+        return wrapper.Handle(request, serviceProvider, options, cancellationToken);
     }
 
     public IAsyncEnumerable<TResponse> Stream<TResponse>(IStreamRequest<TResponse> request, CancellationToken cancellationToken = default)
@@ -27,14 +27,17 @@ public class Mediator(IServiceProvider serviceProvider, EzyMediatrOptions option
         ArgumentNullException.ThrowIfNull(request);
 
         var wrapper = StreamRequestHandlerWrapperFactory<TResponse>.Create(request.GetType());
-        return wrapper.Handle(request, serviceProvider, cancellationToken);
+        return wrapper.Handle(request, serviceProvider, options, cancellationToken);
     }
 
-    public async Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification
+    public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification
     {
         ArgumentNullException.ThrowIfNull(notification);
 
-        var wrapper = NotificationHandlerWrapperFactory.Create(notification.GetType());
-        await wrapper.Handle(notification, serviceProvider, cancellationToken);
+        var notificationType = notification.GetType();
+        var wrapper = notificationType == typeof(TNotification)
+            ? NotificationHandlerWrapperCache<TNotification>.Instance
+            : NotificationHandlerWrapperFactory.Create(notificationType);
+        return wrapper.Handle(notification, serviceProvider, options, cancellationToken);
     }
 }
