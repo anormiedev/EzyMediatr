@@ -9,11 +9,11 @@ namespace EzyMediatr.Core;
 public class EzyMediatrOptions
 {
     public bool AddValidationBehavior { get; set; } = true;
-
-
     public bool WrapAllRequests { get; private set; }
 
-    public Func<IBaseRequest, IServiceProvider, IUnitOfWorkFactory>? UnitOfWorkSelector { get; private set; }
+    internal Func<IBaseRequest, IServiceProvider, CancellationToken, ValueTask<IUnitOfWork>>? UnitOfWorkFactory { get; private set; }
+
+    internal bool UsesDapper { get; private set; }
 
     public EzyMediatrOptions WrapEveryRequest()
     {
@@ -23,48 +23,55 @@ public class EzyMediatrOptions
 
     public EzyMediatrOptions UseDapper(Func<IServiceProvider, IDbConnection> connectionFactory)
     {
-        UnitOfWorkSelector = (_, sp) => new DapperUnitOfWorkFactory(() => connectionFactory(sp));
+        ArgumentNullException.ThrowIfNull(connectionFactory);
+        UnitOfWorkFactory = (_, sp, _) => ValueTask.FromResult<IUnitOfWork>(new DapperUnitOfWork(connectionFactory(sp)));
+        UsesDapper = true;
         return this;
     }
 
 
     public EzyMediatrOptions UseDapper(Func<IBaseRequest, IServiceProvider, IDbConnection> connectionFactory)
     {
-        UnitOfWorkSelector = (request, sp) => new DapperUnitOfWorkFactory(() => connectionFactory(request, sp));
+        ArgumentNullException.ThrowIfNull(connectionFactory);
+        UnitOfWorkFactory = (request, sp, _) => ValueTask.FromResult<IUnitOfWork>(new DapperUnitOfWork(connectionFactory(request, sp)));
+        UsesDapper = true;
         return this;
     }
 
 
     public EzyMediatrOptions UseEfCore<TContext>() where TContext : DbContext
     {
-        UnitOfWorkSelector = (_, sp) =>
-        {
-            var factory = sp.GetRequiredService<IDbContextFactory<TContext>>();
-            return new EfCoreUnitOfWorkFactory<TContext>(factory);
-        };
+        UnitOfWorkFactory = (_, sp, _) => ValueTask.FromResult<IUnitOfWork>(
+            new EfCoreUnitOfWork<TContext>(sp.GetRequiredService<TContext>(), ownsContext: false));
+        UsesDapper = false;
         return this;
     }
 
 
     public EzyMediatrOptions UseEfCore<TContext>(Func<IBaseRequest, bool> when) where TContext : DbContext
     {
-        UnitOfWorkSelector = (request, sp) =>
+        ArgumentNullException.ThrowIfNull(when);
+        UnitOfWorkFactory = (request, sp, _) =>
         {
             if (!when(request))
             {
                 throw new InvalidOperationException("No unit of work configured for this request.");
             }
 
-            var factory = sp.GetRequiredService<IDbContextFactory<TContext>>();
-            return new EfCoreUnitOfWorkFactory<TContext>(factory);
+            return ValueTask.FromResult<IUnitOfWork>(
+                new EfCoreUnitOfWork<TContext>(sp.GetRequiredService<TContext>(), ownsContext: false));
         };
+        UsesDapper = false;
         return this;
     }
 
 
     public EzyMediatrOptions UseUnitOfWorkFactory(Func<IServiceProvider, IUnitOfWorkFactory> resolver)
     {
-        UnitOfWorkSelector = (_, sp) => resolver(sp);
+        ArgumentNullException.ThrowIfNull(resolver);
+        UnitOfWorkFactory = (_, sp, cancellationToken) =>
+            new ValueTask<IUnitOfWork>(resolver(sp).CreateAsync(cancellationToken));
+        UsesDapper = false;
         return this;
     }
 }
