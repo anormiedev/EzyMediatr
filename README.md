@@ -1,182 +1,252 @@
 # EzyMediatr
 
-Simple mediator with validation and optional unit-of-work support. Ships as one NuGet (`EzyMediatr`) that contains the core runtime and DI extensions. Costs $0, so you can skip the $150–$400 seats elsewhere.
+EzyMediatr is a small mediator for .NET 10 applications. It dispatches requests, streams, and notifications, with optional FluentValidation and transactional `Send` pipelines for EF Core or Dapper.
 
-What you get:
-- Request/response, streams, and notifications
-- Drop-in DI registration that scans your assemblies automatically
-- Optional validation via FluentValidation
-- Transactions for Dapper or EF Core (per-request or wrap-all)
+The package is `EzyMediatr`; it contains the runtime and DI registration extensions.
 
-## Quick start
-1) Install:
+## Install
+
 ```bash
 dotnet add package EzyMediatr
 ```
 
-2) Register (Dapper example):
+## Quick start
+
+Register the assembly that contains your handlers. Passing assemblies explicitly is faster and more predictable than scanning every assembly loaded by the process.
+
 ```csharp
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.DependencyInjection;
 using EzyMediatr.Core.Abstractions;
+using EzyMediatr.Core.Handlers;
 using EzyMediatr.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 
 var services = new ServiceCollection();
-services
-    .AddEzyMediatr() // scans current AppDomain for handlers/validators
-    .UseDapper(_ => new SqlConnection("Server=.;Database=app;Trusted_Connection=True;"));
-    // .WrapEveryRequest(); // turn on to wrap all requests in one transaction
+services.AddEzyMediatr(typeof(PingHandler).Assembly);
 
-var mediator = services.BuildServiceProvider().GetRequiredService<IMediator>();
-```
+using var serviceProvider = services.BuildServiceProvider();
+using var scope = serviceProvider.CreateScope();
 
-3) Create a request/handler:
-```csharp
-public sealed record CreateOrder(string Customer, decimal Amount)
-    : IRequest<Guid>, ITransactionalRequest; // mark transactional to enlist in UoW
+var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+var message = await mediator.Send(new Ping("hello"));
 
-public sealed class CreateOrderHandler : IRequestHandler<CreateOrder, Guid>
+public sealed record Ping(string Message) : IRequest<string>;
+
+public sealed class PingHandler : IRequestHandler<Ping, string>
 {
-    public Task<Guid> Handle(CreateOrder request, CancellationToken ct)
-        => Task.FromResult(Guid.NewGuid());
+    public Task<string> Handle(Ping request, CancellationToken cancellationToken)
+        => Task.FromResult($"Pong: {request.Message}");
 }
 ```
 
-4) Add validation (optional):
+`IMediator` is scoped. In ASP.NET Core, resolve it through the existing request scope. In a worker or console application, create and dispose a scope for each unit of work, as above. EzyMediatr deliberately uses that scope; it does not create a nested scope per dispatch.
+
+Assemblies are optional. Calling `AddEzyMediatr()` without them scans the non-dynamic assemblies already loaded in the process:
+
+```csharp
+services.AddEzyMediatr(options =>
+{
+    options.UseDapper(_ => new SqlConnection(connectionString));
+    options.WrapEveryRequest();
+});
+```
+
+Automatic scanning is convenient for a single-project application. Explicit assemblies remain faster and more predictable when handlers live in separate projects that might not be loaded yet.
+
+## Messages and handlers
+
+| Message | Handler | Dispatch method | Cardinality |
+| --- | --- | --- | --- |
+| `IRequest<TResponse>` | `IRequestHandler<TRequest, TResponse>` | `Send` | Exactly one handler |
+| `IStreamRequest<TResponse>` | `IStreamRequestHandler<TRequest, TResponse>` | `Stream` | Exactly one handler |
+| `INotification` | `INotificationHandler<TNotification>` | `Publish` | Zero or more handlers |
+
+Request and stream handlers are required to be unique. Registration throws a clear exception if more than one implementation is found. Notification handlers are invoked sequentially in registration order; if one throws, later handlers are not invoked. Implement `INotificationPipelineBehavior<TNotification>` to wrap publication with logging, tracing, or other cross-cutting behavior.
+
+```csharp
+public sealed record OrderCreated(Guid OrderId) : INotification;
+
+public sealed class SendReceipt : INotificationHandler<OrderCreated>
+{
+    public Task Handle(OrderCreated notification, CancellationToken cancellationToken)
+    {
+        // Send a receipt.
+        return Task.CompletedTask;
+    }
+}
+
+await mediator.Publish(new OrderCreated(orderId));
+```
+
+## Validation and pipelines
+
+FluentValidation validators in the registered assemblies are discovered automatically. Validation runs before the request handler and throws `ValidationException` when any validator fails.
+
 ```csharp
 using FluentValidation;
 
-public sealed class CreateOrderValidator : AbstractValidator<CreateOrder>
+public sealed class PingValidator : AbstractValidator<Ping>
 {
-    public CreateOrderValidator()
+    public PingValidator()
     {
-        RuleFor(x => x.Customer).NotEmpty();
-        RuleFor(x => x.Amount).GreaterThan(0);
+        RuleFor(x => x.Message).NotEmpty();
     }
 }
 ```
 
-5) Use it:
+To disable validation:
+
 ```csharp
-var id = await mediator.Send(new CreateOrder("alice", 10m));
-
-await foreach (var forecast in mediator.Stream(new GetWeatherStreamQuery(5)))
-{
-    Console.WriteLine(forecast);
-}
-
-await mediator.Publish(new OrderCreated(id));
+services.AddEzyMediatr(
+    options => options.AddValidationBehavior = false,
+    typeof(PingHandler).Assembly);
 ```
 
-## Using with Dapper (step by step)
-1) Provide a connection factory:
-```csharp
-services.AddEzyMediatr()
-    .UseDapper((request, sp) => new SqlConnection("Server=.;Database=app;Trusted_Connection=True;"));
+Implement `IPipelineBehavior<TRequest, TResponse>` for cross-cutting behavior. `IRequestPreProcessor<TRequest>` and `IRequestPostProcessor<TRequest, TResponse>` run around the handler as the terminal pipeline operation. A post-processor is completed before a transaction commits.
+
+Streams support `IStreamPipelineBehavior<TRequest, TResponse>` and pre-processors. A stream pre-processor runs once when enumeration begins. Validation, transactions, and request post-processors intentionally apply only to `Send`, because a stream may remain open for an unbounded time. Put post-stream cleanup in a stream behavior's `finally` block so it also runs when enumeration fails, is cancelled, or the consumer stops early.
+
+Behaviors execute in registration order: the first registered behavior is the outermost. The built-in request order is:
+
+```text
+custom behaviors
+  -> validation
+    -> transaction (when enabled for the request)
+      -> pre-processors
+        -> handler
+      -> post-processors
 ```
-2) Mark any request that needs a transaction with `ITransactionalRequest`.
-3) Want everything transactional? Call `.WrapEveryRequest()`.
-4) Need multiple databases? Return different connections based on the `request`:
+
+Stream and notification behaviors follow the same outermost-first rule. Cancellation tokens are forwarded to every behavior, processor, and handler.
+
+## Transactions
+
+Transactions apply to `Send` only. Mark a request with `ITransactionalRequest`, or call `WrapEveryRequest()` to transact every regular request.
+If a transactional request is dispatched without configuring a transaction provider, EzyMediatr throws instead of running it without a transaction.
+
 ```csharp
-services.AddEzyMediatr()
-    .UseDapper((request, sp) => request switch
+public sealed record CreateOrder(string Customer) : IRequest<Guid>, ITransactionalRequest;
+```
+
+Configure global wrapping together with the transaction provider in `AddEzyMediatr`:
+
+```csharp
+services.AddEzyMediatr(
+    options =>
     {
-        CreateOrder => new SqlConnection(orderConn),   // write connection
-        _ => new SqlConnection(defaultConn)            // default connection
+        options.UseDapper(_ => new SqlConnection(connectionString));
+        options.WrapEveryRequest();
+    },
+    typeof(CreateOrderHandler).Assembly);
+```
+
+### EF Core
+
+The transaction is opened on the same scoped `DbContext` injected into the handler. EzyMediatr calls `SaveChangesAsync` and commits only after the handler and post-processors succeed.
+
+```csharp
+services.AddEzyMediatr(typeof(CreateOrderHandler).Assembly)
+    .UseEfCore<AppDbContext>(options =>
+        options.UseSqlServer(connectionString));
+
+public sealed class CreateOrderHandler(AppDbContext db) : IRequestHandler<CreateOrder, Guid>
+{
+    public Task<Guid> Handle(CreateOrder request, CancellationToken cancellationToken)
+    {
+        var order = new Order { Id = Guid.NewGuid(), Customer = request.Customer };
+        db.Orders.Add(order);
+        return Task.FromResult(order.Id);
+    }
+}
+```
+
+If your application already registers `IDbContextFactory<AppDbContext>`, use `.UseEfCore<AppDbContext>()` instead.
+
+### Dapper
+
+EzyMediatr does not take a dependency on Dapper itself; install it in the application that uses it. The transaction is available through `ISqlUnitOfWork`. Always pass both its connection and transaction to Dapper commands.
+
+```csharp
+services.AddEzyMediatr(typeof(CreateOrderHandler).Assembly)
+    .UseDapper((request, serviceProvider) => request switch
+    {
+        CreateOrder => new SqlConnection(writeConnectionString),
+        _ => new SqlConnection(readConnectionString)
     });
-```
 
-## Using with EF Core (step by step)
-1) Register your context factory:
-```csharp
-using Microsoft.EntityFrameworkCore;
-
-services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseSqlServer("Server=.;Database=app;Trusted_Connection=True;"));
-```
-2) Plug EzyMediatr into EF Core:
-```csharp
-services.AddEzyMediatr()
-    .UseEfCore<AppDbContext>();
-    // .WrapEveryRequest(); // make every request transactional if you like
-```
-3) Transactions are handled for requests that implement `ITransactionalRequest` (or all of them if you wrapped everything).
-
-## Notifications (publish/subscribe)
-- Define a notification:
-```csharp
-public sealed record OrderCreated(Guid OrderId) : INotification;
-```
-- Handle it (you can have multiple handlers for the same notification):
-```csharp
-public sealed class OrderCreatedEmailHandler : INotificationHandler<OrderCreated>
+public sealed class CreateOrderHandler(ISqlUnitOfWork uow)
+    : IRequestHandler<CreateOrder, Guid>
 {
-    public Task Handle(OrderCreated notification, CancellationToken ct)
+    public async Task<Guid> Handle(CreateOrder request, CancellationToken cancellationToken)
     {
-        // send email...
-        return Task.CompletedTask;
-    }
-}
-
-public sealed class OrderCreatedMetricsHandler : INotificationHandler<OrderCreated>
-{
-    public Task Handle(OrderCreated notification, CancellationToken ct)
-    {
-        // record metrics...
-        return Task.CompletedTask;
+        var id = Guid.NewGuid();
+        await uow.Connection.ExecuteAsync(
+            "insert into Orders (Id, Customer) values (@Id, @Customer)",
+            new { Id = id, request.Customer },
+            transaction: uow.Transaction);
+        return id;
     }
 }
 ```
-- Publish:
+
+`ISqlUnitOfWork` and its transaction are available only while a transactional `Send` is executing. Do not capture either for background work or use it after the handler returns.
+
+## Extensibility
+
+For a custom transaction implementation, provide an `IUnitOfWorkFactory`:
+
 ```csharp
-await mediator.Publish(new OrderCreated(orderId));
+services.AddEzyMediatr(typeof(PingHandler).Assembly)
+    .UseUnitOfWorkFactory(serviceProvider => new MyUnitOfWorkFactory(serviceProvider));
 ```
-- Handlers are discovered automatically during `AddEzyMediatr()` assembly scanning.
 
-Quick example (all together):
-```csharp
-public sealed record OrderCreated(Guid OrderId) : INotification;
+An `IUnitOfWork` owns the transaction boundary: it executes the pipeline operation, commits on success, rolls back on failure, and is disposed after the dispatch.
 
-public sealed class OrderCreatedEmailHandler : INotificationHandler<OrderCreated>
-{
-    public Task Handle(OrderCreated notification, CancellationToken ct)
-    {
-        Console.WriteLine($"Email sent for order {notification.OrderId}");
-        return Task.CompletedTask;
-    }
-}
+## Runnable sample API
 
-// Somewhere in your code:
-await mediator.Publish(new OrderCreated(orderId));
+[`EzyMediatr.SampleApi`](EzyMediatr.SampleApi/README.md) is a controller-based, CQRS-organized Web API demonstrating validation, request/stream/notification behaviors, processors, Dapper, explicit transactional requests, global request wrapping, commit, and rollback using a self-contained SQLite database.
+
+```bash
+dotnet run --project EzyMediatr.SampleApi/EzyMediatr.SampleApi.csproj
 ```
-- There is no manual "subscribe" step: implementing `INotificationHandler<T>` is the subscription. When you call `Publish`, every registered handler runs.
 
-## Key interfaces (what to implement)
-- `IRequest<TResponse>`: regular request/response.
-- `IStreamRequest<TResponse>`: streaming responses (consumed via `mediator.Stream()`).
-- `INotification`: fire-and-forget notifications (consumed via `mediator.Publish()`).
-- `IRequestHandler<TRequest,TResponse>`: handles `IRequest<TResponse>`.
-- `IStreamRequestHandler<TRequest,TResponse>`: handles `IStreamRequest<TResponse>`.
-- `INotificationHandler<TNotification>`: handles notifications.
-- `ITransactionalRequest`: marker to run the handler inside a unit of work/transaction (Dapper or EF Core). If you call `.WrapEveryRequest()`, you don’t need the marker—everything is transactional.
+Open `http://localhost:5000/swagger` to exercise every sample endpoint through Swagger UI.
 
+## Build and pack
 
-## System Architecture 
+```bash
+dotnet test EzyMediatr.sln
+dotnet pack EzyMediatr.DependencyInjection/EzyMediatr.DependencyInjection.csproj \
+  -c Release /p:ContinuousIntegrationBuild=true --output ./nupkgs
+```
 
-![alt text](image.png)
+Update the version in both project files before publishing.
 
+Run the allocation and CPU benchmarks after changing dispatch internals:
 
-## Notes and extensibility
-- If you omit assemblies in `AddEzyMediatr()`, the current AppDomain is scanned.
-- Add logging/telemetry by implementing `IPipelineBehavior<TRequest,TResponse>`,
-  `IRequestPreProcessor<TRequest>`, or `IRequestPostProcessor<TRequest,TResponse>`.
+```bash
+dotnet run -c Release --project EzyMediatr.Benchmarks/EzyMediatr.Benchmarks.csproj
+```
 
-## Build / Publish (for maintainers)
-- Requires the .NET 10 SDK (net10.0 target).
-- Build: `dotnet build EzyMediatr.sln`
-- Pack: `dotnet pack EzyMediatr.DependencyInjection/EzyMediatr.DependencyInjection.csproj -c Release /p:ContinuousIntegrationBuild=true --output ./nupkgs`
-- Publish: `dotnet nuget push ./nupkgs/*.nupkg -k $NUGET_API_KEY -s https://api.nuget.org/v3/index.json --skip-duplicate`
-- Bump `<Version>` in `EzyMediatr.DependencyInjection.csproj` before packing (keep `EzyMediatr.Core.csproj` in sync for assembly metadata).
+## Performance
+
+The default request path avoids reflection after the first request type, nested dependency-injection scopes, LINQ pipeline construction, response boxing, and behavior delegates when no custom behaviors are registered. Optional validators, transactions, processors, and behaviors are instantiated and executed only when they apply.
+
+As an indicative baseline, the included short-run benchmark on an Apple M4 Pro with .NET 10 measured:
+
+| Synthetic operation | Mean | Allocated |
+| --- | ---: | ---: |
+| `Send` with a completed value-type handler | ~78 ns | 120 B |
+| `Send` with one pass-through behavior | ~120 ns | 288 B |
+| `Send` with one empty validator | ~187 ns | 792 B |
+| `Send` with no-op pre/post-processors | ~134 ns | 192 B |
+| `Send` with an in-memory transaction | ~138 ns | 440 B |
+| `Publish` with one completed handler | ~33 ns | 40 B |
+| `Publish` with one pass-through behavior | ~73 ns | 208 B |
+| One-item `Stream` | ~165 ns | 512 B |
+| One-item `Stream` with one pass-through behavior | ~192 ns | 680 B |
+
+The 120-byte default-path allocation is the `Task<T>` required by the public `Task<TResponse>` API. Optional-path figures include the costs of their underlying abstractions, such as FluentValidation and async enumeration. Results vary by runtime, hardware, dependency-injection container, and handler implementation, so run the benchmark in your own target environment rather than treating these figures as a service-level guarantee. For handlers that perform I/O, database and network work will dominate this dispatch overhead.
 
 ## License
-MIT License. See `LICENSE`.
+
+MIT. See [LICENSE](LICENSE).
