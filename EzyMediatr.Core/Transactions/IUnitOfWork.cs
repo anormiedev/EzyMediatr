@@ -7,7 +7,7 @@ public interface IUnitOfWork : IAsyncDisposable
     Task<TResponse> ExecuteAsync<TResponse>(Func<CancellationToken, Task<TResponse>> operation, CancellationToken cancellationToken = default);
 }
 
-public interface ISqlUnitOfWork : IUnitOfWork
+public interface ISqlUnitOfWork
 {
     IDbConnection Connection { get; }
     IDbTransaction? Transaction { get; }
