@@ -60,6 +60,9 @@ dlldata.c
 # Benchmark Results
 BenchmarkDotNet.Artifacts/
 
+# EzyMediatr sample API runtime database
+ezymediatr-demo.db*
+
 # .NET
 project.lock.json
 project.fragment.lock.json
