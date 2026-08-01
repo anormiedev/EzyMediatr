@@ -3,26 +3,28 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 namespace EzyMediatr.Core.Transactions;
 
-public sealed class EfCoreUnitOfWork<TContext>(TContext context) : IUnitOfWork where TContext : DbContext
+public sealed class EfCoreUnitOfWork<TContext>(TContext context, bool ownsContext = true) : IUnitOfWork where TContext : DbContext
 {
-    private IDbContextTransaction? _transaction;
-
     public async Task<TResponse> ExecuteAsync<TResponse>(Func<CancellationToken, Task<TResponse>> operation, CancellationToken cancellationToken = default)
     {
-        _transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
         try
         {
             var response = await operation(cancellationToken);
             await context.SaveChangesAsync(cancellationToken);
-            await _transaction.CommitAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             return response;
         }
         catch
         {
-            if (_transaction is not null)
+            try
             {
-                await _transaction.RollbackAsync(cancellationToken);
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // Preserve the exception raised by the operation or commit.
             }
 
             throw;
@@ -31,27 +33,36 @@ public sealed class EfCoreUnitOfWork<TContext>(TContext context) : IUnitOfWork w
 
     public async ValueTask DisposeAsync()
     {
-        if (_transaction is not null)
+        if (ownsContext)
         {
-            await _transaction.DisposeAsync();
+            await context.DisposeAsync();
         }
-
-        await context.DisposeAsync();
     }
 }
 
 public sealed class EfCoreUnitOfWorkFactory<TContext> : IUnitOfWorkFactory where TContext : DbContext
 {
-    private readonly IDbContextFactory<TContext> _contextFactory;
+    private readonly IDbContextFactory<TContext>? _contextFactory;
+    private readonly Func<TContext>? _contextResolver;
+    private readonly bool _ownsContext;
 
     public EfCoreUnitOfWorkFactory(IDbContextFactory<TContext> contextFactory)
     {
         _contextFactory = contextFactory;
+        _ownsContext = true;
+    }
+
+    public EfCoreUnitOfWorkFactory(Func<TContext> contextResolver)
+    {
+        _contextResolver = contextResolver;
+        _ownsContext = false;
     }
 
     public async Task<IUnitOfWork> CreateAsync(CancellationToken cancellationToken = default)
     {
-        var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
-        return new EfCoreUnitOfWork<TContext>(context);
+        var context = _contextResolver is not null
+            ? _contextResolver()
+            : await _contextFactory!.CreateDbContextAsync(cancellationToken);
+        return new EfCoreUnitOfWork<TContext>(context, _ownsContext);
     }
 }
