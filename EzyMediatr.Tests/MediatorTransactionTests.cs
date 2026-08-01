@@ -178,6 +178,38 @@ public sealed class MediatorTransactionTests
         Assert.True(connection!.LastTransaction!.Committed);
     }
 
+    [Fact]
+    public async Task Unit_of_work_rejects_a_null_operation_before_opening_resources()
+    {
+        var connection = new TestDbConnection();
+        var unitOfWork = new DapperUnitOfWork(connection);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => unitOfWork.ExecuteAsync<int>(null!));
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+    }
+
+    [Fact]
+    public async Task Nested_transactional_sends_join_the_active_unit_of_work()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<NestedTransactionState>();
+        services.AddEzyMediatr(
+            options => options.UseUnitOfWorkFactory(serviceProvider =>
+                new NestedUnitOfWorkFactory(serviceProvider.GetRequiredService<NestedTransactionState>())),
+            typeof(MediatorTransactionTests).Assembly);
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IMediator>()
+            .Send(new OuterTransactionalRequest());
+        var state = scope.ServiceProvider.GetRequiredService<NestedTransactionState>();
+
+        Assert.Equal(42, result);
+        Assert.Equal(1, state.FactoryCalls);
+        Assert.Equal(1, state.ExecutionCalls);
+    }
+
     public sealed record ScopedRequest : IRequest<ScopeMarker>;
     public sealed class ScopedRequestHandler(ScopeMarker marker) : IRequestHandler<ScopedRequest, ScopeMarker>
     {
@@ -191,6 +223,50 @@ public sealed class MediatorTransactionTests
     {
         public Task<int> Handle(RegularRequest request, CancellationToken cancellationToken)
             => Task.FromResult(42);
+    }
+
+    public sealed record OuterTransactionalRequest : IRequest<int>, ITransactionalRequest;
+    public sealed record InnerTransactionalRequest : IRequest<int>, ITransactionalRequest;
+
+    public sealed class OuterTransactionalRequestHandler(IMediator mediator)
+        : IRequestHandler<OuterTransactionalRequest, int>
+    {
+        public Task<int> Handle(OuterTransactionalRequest request, CancellationToken cancellationToken)
+            => mediator.Send(new InnerTransactionalRequest(), cancellationToken);
+    }
+
+    public sealed class InnerTransactionalRequestHandler : IRequestHandler<InnerTransactionalRequest, int>
+    {
+        public Task<int> Handle(InnerTransactionalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(42);
+    }
+
+    public sealed class NestedTransactionState
+    {
+        public int FactoryCalls { get; set; }
+        public int ExecutionCalls { get; set; }
+    }
+
+    public sealed class NestedUnitOfWorkFactory(NestedTransactionState state) : IUnitOfWorkFactory
+    {
+        public Task<IUnitOfWork> CreateAsync(CancellationToken cancellationToken = default)
+        {
+            state.FactoryCalls++;
+            return Task.FromResult<IUnitOfWork>(new NestedUnitOfWork(state));
+        }
+    }
+
+    public sealed class NestedUnitOfWork(NestedTransactionState state) : IUnitOfWork
+    {
+        public Task<TResponse> ExecuteAsync<TResponse>(
+            Func<CancellationToken, Task<TResponse>> operation,
+            CancellationToken cancellationToken = default)
+        {
+            state.ExecutionCalls++;
+            return operation(cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     public sealed record ValidationRequest : IRequest<int>;
