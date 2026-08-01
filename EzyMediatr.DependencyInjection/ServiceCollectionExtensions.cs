@@ -35,36 +35,66 @@ public static class ServiceCollectionExtensions
 
     internal static void RegisterHandlers(IServiceCollection services, Assembly[] assemblies)
     {
-        foreach (var type in assemblies
-                     .SelectMany(GetLoadableTypes)
-                     .Where(t => t is { IsAbstract: false, IsInterface: false } && !t.IsGenericTypeDefinition))
+        var singleHandlerServices = new HashSet<Type>();
+        foreach (var descriptor in services)
         {
-            foreach (var handlerInterface in type.GetInterfaces().Where(i => i.IsGenericType))
+            if (IsSingleHandlerService(descriptor.ServiceType))
             {
-                var def = handlerInterface.GetGenericTypeDefinition();
-                if (def == typeof(IRequestHandler<,>) || def == typeof(IStreamRequestHandler<,>))
+                singleHandlerServices.Add(descriptor.ServiceType);
+            }
+        }
+
+        foreach (var assembly in assemblies)
+        {
+            foreach (var type in GetLoadableTypes(assembly))
+            {
+                if (type.IsAbstract || type.IsInterface || type.IsGenericTypeDefinition)
                 {
-                    if (services.Any(descriptor => descriptor.ServiceType == handlerInterface))
+                    continue;
+                }
+
+                foreach (var handlerInterface in type.GetInterfaces())
+                {
+                    if (!handlerInterface.IsGenericType)
                     {
-                        throw new InvalidOperationException($"Multiple handlers were registered for '{handlerInterface}'. A request must have exactly one handler.");
+                        continue;
                     }
 
-                    services.AddScoped(handlerInterface, type);
-                }
+                    var definition = handlerInterface.GetGenericTypeDefinition();
+                    if (definition == typeof(IRequestHandler<,>) || definition == typeof(IStreamRequestHandler<,>))
+                    {
+                        if (!singleHandlerServices.Add(handlerInterface))
+                        {
+                            throw new InvalidOperationException($"Multiple handlers were registered for '{handlerInterface}'. A request must have exactly one handler.");
+                        }
 
-                if (def == typeof(INotificationHandler<>))
-                {
-                    services.AddScoped(handlerInterface, type);
-                }
+                        services.AddScoped(handlerInterface, type);
+                        continue;
+                    }
 
-                if (def == typeof(IRequestPreProcessor<>) || def == typeof(IRequestPostProcessor<,>) ||
-                    def == typeof(IPipelineBehavior<,>) || def == typeof(IStreamPipelineBehavior<,>) ||
-                    def == typeof(INotificationPipelineBehavior<>))
-                {
-                    services.AddScoped(handlerInterface, type);
+                    if (definition == typeof(INotificationHandler<>) ||
+                        definition == typeof(IRequestPreProcessor<>) ||
+                        definition == typeof(IRequestPostProcessor<,>) ||
+                        definition == typeof(IPipelineBehavior<,>) ||
+                        definition == typeof(IStreamPipelineBehavior<,>) ||
+                        definition == typeof(INotificationPipelineBehavior<>))
+                    {
+                        services.AddScoped(handlerInterface, type);
+                    }
                 }
             }
         }
+    }
+
+    private static bool IsSingleHandlerService(Type serviceType)
+    {
+        if (!serviceType.IsGenericType)
+        {
+            return false;
+        }
+
+        var definition = serviceType.GetGenericTypeDefinition();
+        return definition == typeof(IRequestHandler<,>) || definition == typeof(IStreamRequestHandler<,>);
     }
 
     private static IEnumerable<TypeInfo> GetLoadableTypes(Assembly assembly)
@@ -86,14 +116,18 @@ public sealed class EzyMediatrBuilder
 {
     private readonly IServiceCollection _services;
     private readonly Assembly[] _assemblies;
+    private bool _unitOfWorkAccessorRegistered;
     private bool _dapperAccessRegistered;
 
     internal EzyMediatrBuilder(IServiceCollection services, Assembly[] assemblies)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(assemblies);
+
         _services = services;
         _assemblies = assemblies is { Length: > 0 }
-            ? assemblies
-            : AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic).ToArray();
+            ? GetDistinctAssemblies(assemblies)
+            : DiscoverHandlerAssemblies();
 
         _services.AddSingleton(Options);
         _services.AddScoped<IMediator, Mediator>();
@@ -101,12 +135,38 @@ public sealed class EzyMediatrBuilder
         ServiceCollectionExtensions.RegisterHandlers(_services, _assemblies);
 
         _services.AddValidatorsFromAssemblies(_assemblies);
+
+        var serviceRegistry = new Lazy<ServiceRegistrationRegistry>(
+            () => new ServiceRegistrationRegistry(_services.Select(descriptor => descriptor.ServiceType)),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        Options.SetServiceRegistry(serviceRegistry);
     }
 
     public EzyMediatrOptions Options { get; } = new();
 
+    private static Assembly[] DiscoverHandlerAssemblies()
+    {
+        var coreAssemblyName = typeof(IBaseRequest).Assembly.GetName();
+        return AppDomain.CurrentDomain.GetAssemblies()
+            .Where(assembly => !assembly.IsDynamic && assembly.GetReferencedAssemblies()
+                .Any(reference => AssemblyName.ReferenceMatchesDefinition(reference, coreAssemblyName)))
+            .Distinct()
+            .ToArray();
+    }
+
+    private static Assembly[] GetDistinctAssemblies(Assembly[] assemblies)
+    {
+        if (Array.IndexOf(assemblies, null!) >= 0)
+        {
+            throw new ArgumentException("Assembly lists cannot contain null values.", nameof(assemblies));
+        }
+
+        return assemblies.Distinct().ToArray();
+    }
+
     public EzyMediatrBuilder UseDapper(Func<IDbConnection> connectionFactory)
     {
+        ArgumentNullException.ThrowIfNull(connectionFactory);
         Options.UseDapper(_ => connectionFactory());
         ApplyUnitOfWork();
         return this;
@@ -135,6 +195,7 @@ public sealed class EzyMediatrBuilder
 
     public EzyMediatrBuilder UseEfCore<TContext>(Action<DbContextOptionsBuilder> optionsAction) where TContext : DbContext
     {
+        ArgumentNullException.ThrowIfNull(optionsAction);
         _services.AddDbContextFactory<TContext>(optionsAction);
         Options.UseEfCore<TContext>();
         ApplyUnitOfWork();
@@ -156,9 +217,14 @@ public sealed class EzyMediatrBuilder
 
     internal void ApplyUnitOfWork()
     {
+        if (Options.UnitOfWorkFactory is not null && !_unitOfWorkAccessorRegistered)
+        {
+            _services.AddScoped<UnitOfWorkAccessor>();
+            _unitOfWorkAccessorRegistered = true;
+        }
+
         if (Options.UsesDapper && !_dapperAccessRegistered)
         {
-            _services.AddScoped<DapperUnitOfWorkAccessor>();
             _services.AddScoped<ISqlUnitOfWork, ActiveSqlUnitOfWork>();
             _dapperAccessRegistered = true;
         }
