@@ -18,19 +18,39 @@ public sealed class DapperUnitOfWork : IUnitOfWork, ISqlUnitOfWork
 
     public async Task<TResponse> ExecuteAsync<TResponse>(Func<CancellationToken, Task<TResponse>> operation, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         try
         {
-            await OpenIfNeededAsync(cancellationToken);
-            _transaction = _connection.BeginTransaction();
-            var response = await operation(cancellationToken);
-            _transaction.Commit();
+            await OpenIfNeededAsync(cancellationToken).ConfigureAwait(false);
+            _transaction = _connection is DbConnection dbConnection
+                ? await dbConnection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+                : _connection.BeginTransaction();
+
+            var response = await operation(cancellationToken).ConfigureAwait(false);
+            if (_transaction is DbTransaction dbTransaction)
+            {
+                await dbTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                _transaction.Commit();
+            }
+
             return response;
         }
         catch
         {
             try
             {
-                _transaction?.Rollback();
+                if (_transaction is DbTransaction dbTransaction)
+                {
+                    await dbTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    _transaction?.Rollback();
+                }
             }
             catch
             {
@@ -41,18 +61,30 @@ public sealed class DapperUnitOfWork : IUnitOfWork, ISqlUnitOfWork
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         try
         {
-            _transaction?.Dispose();
+            if (_transaction is DbTransaction dbTransaction)
+            {
+                await dbTransaction.DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                _transaction?.Dispose();
+            }
         }
         finally
         {
-            _connection.Dispose();
+            if (_connection is DbConnection dbConnection)
+            {
+                await dbConnection.DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                _connection.Dispose();
+            }
         }
-
-        return ValueTask.CompletedTask;
     }
 
     private async Task OpenIfNeededAsync(CancellationToken cancellationToken)
@@ -64,7 +96,7 @@ public sealed class DapperUnitOfWork : IUnitOfWork, ISqlUnitOfWork
 
         if (_connection is DbConnection db)
         {
-            await db.OpenAsync(cancellationToken);
+            await db.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
         else
         {
