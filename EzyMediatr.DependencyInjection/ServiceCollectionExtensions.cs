@@ -6,6 +6,7 @@ using EzyMediatr.Core.Abstractions;
 using EzyMediatr.Core.Handlers;
 using EzyMediatr.Core.Pipeline;
 using EzyMediatr.Core.Transactions;
+using EzyMediatr.Core.Internal;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 
@@ -35,23 +36,48 @@ public static class ServiceCollectionExtensions
     internal static void RegisterHandlers(IServiceCollection services, Assembly[] assemblies)
     {
         foreach (var type in assemblies
-                     .SelectMany(a => a.DefinedTypes)
+                     .SelectMany(GetLoadableTypes)
                      .Where(t => t is { IsAbstract: false, IsInterface: false } && !t.IsGenericTypeDefinition))
         {
             foreach (var handlerInterface in type.GetInterfaces().Where(i => i.IsGenericType))
             {
                 var def = handlerInterface.GetGenericTypeDefinition();
-                if (def == typeof(IRequestHandler<,>) || def == typeof(IStreamRequestHandler<,>) || def == typeof(INotificationHandler<>))
+                if (def == typeof(IRequestHandler<,>) || def == typeof(IStreamRequestHandler<,>))
+                {
+                    if (services.Any(descriptor => descriptor.ServiceType == handlerInterface))
+                    {
+                        throw new InvalidOperationException($"Multiple handlers were registered for '{handlerInterface}'. A request must have exactly one handler.");
+                    }
+
+                    services.AddScoped(handlerInterface, type);
+                }
+
+                if (def == typeof(INotificationHandler<>))
                 {
                     services.AddScoped(handlerInterface, type);
                 }
 
                 if (def == typeof(IRequestPreProcessor<>) || def == typeof(IRequestPostProcessor<,>) ||
-                    def == typeof(IPipelineBehavior<,>) || def == typeof(IStreamPipelineBehavior<,>))
+                    def == typeof(IPipelineBehavior<,>) || def == typeof(IStreamPipelineBehavior<,>) ||
+                    def == typeof(INotificationPipelineBehavior<>))
                 {
                     services.AddScoped(handlerInterface, type);
                 }
             }
+        }
+    }
+
+    private static IEnumerable<TypeInfo> GetLoadableTypes(Assembly assembly)
+    {
+        try
+        {
+            return assembly.DefinedTypes;
+        }
+        catch (ReflectionTypeLoadException exception)
+        {
+            return exception.Types
+                .Where(type => type is not null)
+                .Select(type => type!.GetTypeInfo());
         }
     }
 }
@@ -60,7 +86,7 @@ public sealed class EzyMediatrBuilder
 {
     private readonly IServiceCollection _services;
     private readonly Assembly[] _assemblies;
-    private bool _uowRegistered;
+    private bool _dapperAccessRegistered;
 
     internal EzyMediatrBuilder(IServiceCollection services, Assembly[] assemblies)
     {
@@ -74,18 +100,13 @@ public sealed class EzyMediatrBuilder
 
         ServiceCollectionExtensions.RegisterHandlers(_services, _assemblies);
 
-        if (Options.AddValidationBehavior)
-        {
-            _services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
-            _services.AddValidatorsFromAssemblies(_assemblies);
-        }
+        _services.AddValidatorsFromAssemblies(_assemblies);
     }
 
     public EzyMediatrOptions Options { get; } = new();
 
     public EzyMediatrBuilder UseDapper(Func<IDbConnection> connectionFactory)
     {
-        _services.AddScoped<IDbConnection>(_ => connectionFactory());
         Options.UseDapper(_ => connectionFactory());
         ApplyUnitOfWork();
         return this;
@@ -93,7 +114,13 @@ public sealed class EzyMediatrBuilder
 
     public EzyMediatrBuilder UseDapper(Func<IServiceProvider, IDbConnection> connectionFactory)
     {
-        _services.AddScoped(connectionFactory);
+        Options.UseDapper(connectionFactory);
+        ApplyUnitOfWork();
+        return this;
+    }
+
+    public EzyMediatrBuilder UseDapper(Func<IBaseRequest, IServiceProvider, IDbConnection> connectionFactory)
+    {
         Options.UseDapper(connectionFactory);
         ApplyUnitOfWork();
         return this;
@@ -109,7 +136,6 @@ public sealed class EzyMediatrBuilder
     public EzyMediatrBuilder UseEfCore<TContext>(Action<DbContextOptionsBuilder> optionsAction) where TContext : DbContext
     {
         _services.AddDbContextFactory<TContext>(optionsAction);
-        _services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<TContext>>().CreateDbContext());
         Options.UseEfCore<TContext>();
         ApplyUnitOfWork();
         return this;
@@ -130,12 +156,11 @@ public sealed class EzyMediatrBuilder
 
     internal void ApplyUnitOfWork()
     {
-        if (Options.UnitOfWorkSelector is null || _uowRegistered)
+        if (Options.UsesDapper && !_dapperAccessRegistered)
         {
-            return;
+            _services.AddScoped<DapperUnitOfWorkAccessor>();
+            _services.AddScoped<ISqlUnitOfWork, ActiveSqlUnitOfWork>();
+            _dapperAccessRegistered = true;
         }
-
-        _services.AddScoped(typeof(IPipelineBehavior<,>), typeof(TransactionBehavior<,>));
-        _uowRegistered = true;
     }
 }
