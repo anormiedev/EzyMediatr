@@ -7,7 +7,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>EzyMediatr.DependencyInjection</RootNamespace>
     <PackageId>EzyMediatr</PackageId>
-    <Version>0.0.2</Version>
+    <Version>0.0.3</Version>
     <Authors>A Normie Dev</Authors>
     <Company>A Normie Dev's Company</Company>
     <Description>Unified EzyMediatr mediator package including core, validation, and unit-of-work DI extensions.</Description>
@@ -18,7 +18,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>mediator mediatR validation pipeline dapper efcore dependency-injection</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Initial unified package bundling core runtime and DI extensions.</PackageReleaseNotes>
+    <PackageReleaseNotes>Add source-generated mediator registration with optimized runtime discovery fallback.</PackageReleaseNotes>
     <Copyright>Copyright (c) EzyMediatr 2025</Copyright>
   </PropertyGroup>
 
