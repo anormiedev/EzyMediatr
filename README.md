@@ -17,7 +17,7 @@ dotnet add package EzyMediatr
 
 ## Quick start
 
-Register EzyMediatr. By default it discovers handlers in already-loaded assemblies that reference `EzyMediatr.Core`.
+Register EzyMediatr. The package's incremental source generator emits direct registrations for handlers in the current compilation, so the zero-argument API normally performs no assembly scan at startup.
 
 ```csharp
 using EzyMediatr.Core.Abstractions;
@@ -45,7 +45,7 @@ public sealed class PingHandler : IRequestHandler<Ping, string>
 
 `IMediator` is scoped. In ASP.NET Core, resolve it through the existing request scope. In a worker or console application, create and dispose a scope for each unit of work, as above. EzyMediatr deliberately uses that scope; it does not create a nested scope per dispatch.
 
-Assemblies are optional. Calling `AddEzyMediatr()` without them scans the non-dynamic, already-loaded assemblies that reference `EzyMediatr.Core`:
+Assemblies are optional. Calling `AddEzyMediatr()` without them applies the generated registration table. If source generation is unavailable, it falls back to scanning non-dynamic, already-loaded assemblies that reference `EzyMediatr.Core`:
 
 ```csharp
 services.AddEzyMediatr(options =>
@@ -55,7 +55,7 @@ services.AddEzyMediatr(options =>
 });
 ```
 
-Automatic scanning is convenient for a single-project application. Pass explicit assemblies when a handler project may not be loaded yet, when the process hosts plugins you do not want registered, or when minimizing startup work matters. Duplicate explicit assemblies are ignored.
+The generator covers concrete, closed handlers, behaviors, processors, and public FluentValidation validators. If a relevant type cannot be referenced safely from generated code, diagnostic `EZM001` is emitted and that compilation requests runtime discovery instead. Pass explicit assemblies when a handler project may not be loaded yet, when loading plugins built without the generator, or when the process hosts plugins you do not want registered. Duplicate explicit assemblies are ignored. `EzyMediatrBuilder.UsesGeneratedRegistrations` reports which path the zero-argument call selected.
 
 ## Messages and handlers
 
@@ -214,7 +214,7 @@ An `IUnitOfWork` owns the transaction boundary: it executes the pipeline operati
 EzyMediatr dispatches trusted, in-process objects. It is not an authentication, authorization, input-sanitization, or process-isolation boundary.
 
 - Authorize each operation before sensitive handler work. FluentValidation verifies request shape and business rules; it does not establish caller identity or permission.
-- Automatic discovery trusts matching assemblies already loaded into the process and registers their mediator extension points. Use explicit assemblies when hosting third-party or otherwise untrusted plugins.
+- Generated registration trusts loaded assemblies that contribute generator registrars. Runtime fallback trusts matching assemblies already loaded into the process. Use explicit assemblies when hosting third-party or otherwise untrusted plugins.
 - Parameterize database commands, pass `ISqlUnitOfWork.Transaction` to every Dapper command in a transactional handler, and do not leak scoped services or unit-of-work objects into background work.
 - Cancellation is cooperative. Handlers, processors, validators, and behaviors must observe the supplied token, and external calls still need their own timeouts and security controls.
 
@@ -296,7 +296,7 @@ The direct controls separate handler and async-enumeration cost from mediator ov
 
 JIT disassembly on ARM64 shows that calls through `IMediator` use the runtime's interface-dispatch helper. Hand-written assembly would be architecture- and runtime-version-specific while leaving dependency-injection and runtime-type lookup costs intact, so it is not a maintainable optimization boundary. Moving materially closer to direct-call CPU cost would require an optional source-generated, typed dispatch backend that emits each known pipeline at compile time. That is a separate architecture and packaging feature; the current runtime dispatcher remains reflection-free after cache warm-up and allocation-free on its common completed-task paths.
 
-Registration is startup-only. In the same benchmark, one explicit assembly took about 2.9 microseconds and allocated 11.9 KB; automatic discovery took about 44 microseconds and allocated 119 KB. The default prioritizes convenience, while explicit assembly registration remains available for tighter startup and trust boundaries.
+Registration is startup-only. In the same benchmark, the generated zero-argument path took about 0.42 microseconds and allocated 3.33 KB. One explicitly scanned assembly took about 1.73 microseconds and allocated 6.39 KB; the runtime automatic-discovery fallback measured about 11.1 microseconds and 36.7 KB. The generated measurement covers `AddEzyMediatr()` itself; its one-time module-initializer delegate registration occurs earlier during assembly initialization. Explicit assembly registration remains available for plugin and trust-boundary control.
 
 ## License
 

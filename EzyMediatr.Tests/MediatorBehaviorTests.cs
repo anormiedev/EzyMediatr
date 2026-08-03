@@ -115,6 +115,20 @@ public sealed class MediatorBehaviorTests
     }
 
     [Fact]
+    public async Task Automatic_discovery_registers_loaded_handler_assemblies()
+    {
+        var services = new ServiceCollection();
+        var builder = services.AddEzyMediatr();
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        var response = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new CancellationRequest());
+
+        Assert.True(builder.UsesGeneratedRegistrations);
+        Assert.Equal(1, response);
+    }
+
+    [Fact]
     public async Task Open_generic_behaviors_registered_after_the_mediator_are_executed()
     {
         var services = new ServiceCollection();

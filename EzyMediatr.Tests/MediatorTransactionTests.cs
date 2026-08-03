@@ -123,6 +123,18 @@ public sealed class MediatorTransactionTests
     }
 
     [Fact]
+    public void Scanned_validators_are_registered_by_interface_and_concrete_type()
+    {
+        var services = new ServiceCollection();
+        services.AddEzyMediatr(typeof(MediatorTransactionTests).Assembly);
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetService<IValidator<ValidationRequest>>());
+        Assert.NotNull(scope.ServiceProvider.GetService<ValidationRequestValidator>());
+    }
+
+    [Fact]
     public async Task Transactional_request_without_a_configured_provider_fails_fast()
     {
         var services = new ServiceCollection();

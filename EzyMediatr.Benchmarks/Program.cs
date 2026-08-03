@@ -142,7 +142,7 @@ public class RegistrationBenchmarks
     }
 
     [Benchmark]
-    public int AutoDiscovery()
+    public int GeneratedRegistration()
     {
         var services = new ServiceCollection();
         services.AddEzyMediatr();

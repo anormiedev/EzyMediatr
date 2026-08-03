@@ -19,10 +19,11 @@ EzyMediatr is built around four priorities:
 | --- | --- |
 | `EzyMediatr.Core` | Contracts, runtime dispatch, pipelines, results, and unit-of-work implementations |
 | `EzyMediatr.DependencyInjection` | Discovery, scanning, registration, and fluent configuration |
+| `EzyMediatr.Generators` | Incremental compile-time discovery and direct DI registration emission |
 | `EzyMediatr.Tests` | Behavioral, registration, pipeline, transaction, cancellation, and allocation tests |
 | `EzyMediatr.Benchmarks` | Dispatch, registration, stream, notification, and MediatR comparison benchmarks |
 
-The `EzyMediatr.DependencyInjection` package project includes both its own assembly and `EzyMediatr.Core.dll` in the unified `EzyMediatr` package.
+The `EzyMediatr.DependencyInjection` package project includes its own assembly, `EzyMediatr.Core.dll`, and the generator under `analyzers/dotnet/cs` in the unified `EzyMediatr` package.
 
 ### Key implementation files
 
@@ -37,16 +38,17 @@ The `EzyMediatr.DependencyInjection` package project includes both its own assem
 | [`DapperUnitOfWork.cs`](../EzyMediatr.Core/Transactions/DapperUnitOfWork.cs) | Connection and SQL transaction lifecycle |
 | [`EfCoreUnitOfWork.cs`](../EzyMediatr.Core/Transactions/EfCoreUnitOfWork.cs) | EF Core transaction and save lifecycle |
 | [`ServiceCollectionExtensions.cs`](../EzyMediatr.DependencyInjection/ServiceCollectionExtensions.cs) | Discovery, scanning, lifetimes, and builder configuration |
+| [`EzyMediatrRegistrationGenerator.cs`](../EzyMediatr.Generators/EzyMediatrRegistrationGenerator.cs) | Compile-time interface discovery and generated descriptor emission |
 
 ## Registration
 
 `AddEzyMediatr` constructs `EzyMediatrBuilder`, which:
 
-1. Uses explicit assemblies or discovers already-loaded, non-dynamic assemblies that directly reference `EzyMediatr.Core`.
+1. Uses explicit assemblies when supplied. Otherwise, it applies module-initializer registrars emitted by the incremental generator. If no complete generated table is available, it discovers already-loaded, non-dynamic assemblies that directly reference `EzyMediatr.Core`; this fallback skips runtime-signed platform assemblies and reads assembly-reference rows directly from in-memory metadata.
 2. Registers singleton `EzyMediatrOptions` and scoped `IMediator`/`Mediator`.
-3. Scans concrete, closed implementation types for handler and pipeline interfaces.
+3. Registers concrete, closed handler, pipeline, and validator interfaces directly from generated code, or scans each fallback assembly's types once.
 4. Rejects duplicate request or stream handler services.
-5. Registers FluentValidation validators from the selected assemblies.
+5. Registers public FluentValidation validators from the same type scan.
 6. Attaches a lazy `ServiceRegistrationRegistry` to the options.
 7. Registers transaction accessors when a unit-of-work provider is configured.
 
@@ -234,7 +236,7 @@ Preserve correctness first and prove optimizations with benchmarks. Separate thr
 
 ### Startup
 
-Assembly enumeration, reflection scanning, validator discovery, and service registration are startup costs. Explicit assemblies reduce discovery work and clarify the trust boundary.
+Generated registration pays only for adding precomputed descriptors; its registrar delegate is contributed once by each handler assembly's module initializer. Runtime fallback pays for assembly enumeration, metadata inspection, reflection scanning, validator discovery, and service registration. It avoids materializing dependency `AssemblyName` graphs and scans each selected assembly's types once.
 
 ### First dispatch
 

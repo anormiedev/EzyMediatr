@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\EzyMediatr.Core\EzyMediatr.Core.csproj" />
     <ProjectReference Include="..\EzyMediatr.DependencyInjection\EzyMediatr.DependencyInjection.csproj" />
+    <ProjectReference Include="..\EzyMediatr.Generators\EzyMediatr.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

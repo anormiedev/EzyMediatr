@@ -22,7 +22,7 @@ dotnet add package EzyMediatr
 
 ## Registration
 
-The simplest registration scans already-loaded application assemblies that directly reference `EzyMediatr.Core`:
+The simplest registration applies a compile-time-generated registration table and normally performs no assembly scan:
 
 ```csharp
 using EzyMediatr.DependencyInjection;
@@ -30,7 +30,11 @@ using EzyMediatr.DependencyInjection;
 builder.Services.AddEzyMediatr();
 ```
 
-Automatic discovery does not load assemblies from disk. Pass explicit assemblies when a handler assembly might not be loaded yet, the process hosts plugins, or predictable startup work matters:
+The package includes an incremental source generator under `analyzers/dotnet/cs`. It emits direct scoped registrations for concrete, closed request handlers, stream handlers, notification handlers, behaviors, processors, and public FluentValidation validators in each compilation. Generated handler assemblies contribute their registrar through a module initializer before application startup.
+
+If a relevant implementation cannot be referenced from generated assembly-level code, the generator reports informational diagnostic `EZM001` and requests runtime discovery for correctness. `EzyMediatrBuilder.UsesGeneratedRegistrations` is `true` only when the generated path was selected.
+
+If generated registration is unavailable, the same call falls back to scanning already-loaded application assemblies that directly reference `EzyMediatr.Core`; it never loads assemblies from disk. Pass explicit assemblies when a handler assembly might not be loaded yet, the process hosts plugins built without the generator, or the plugin trust boundary must be explicit:
 
 ```csharp
 builder.Services.AddEzyMediatr(
@@ -73,6 +77,7 @@ builder.Services
 | `AddEzyMediatr(params Assembly[])` | Registers EzyMediatr and returns `EzyMediatrBuilder` |
 | `AddEzyMediatr(Action<EzyMediatrOptions>?, params Assembly[])` | Configures options and returns `IServiceCollection` |
 | `EzyMediatrBuilder.Options` | Exposes the builder's options instance |
+| `EzyMediatrBuilder.UsesGeneratedRegistrations` | Reports whether zero-argument registration used generated descriptors instead of runtime discovery |
 | `AddValidationBehavior` | Enables built-in `Send` validation; defaults to `true` |
 | `WrapEveryRequest()` | Makes every `Send` transactional and sets the read-only `WrapAllRequests` state |
 | `UseDapper(...)` | Selects Dapper-style `IDbConnection` transaction ownership |

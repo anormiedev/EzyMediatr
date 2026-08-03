@@ -4,6 +4,7 @@
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>EzyMediatr.DependencyInjection</RootNamespace>
     <PackageId>EzyMediatr</PackageId>
     <Version>0.0.2</Version>
@@ -23,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EzyMediatr.Core\EzyMediatr.Core.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\EzyMediatr.Generators\EzyMediatr.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Include the Core assembly in this package -->
@@ -43,6 +45,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\EzyMediatr.Generators\bin\$(Configuration)\netstandard2.0\EzyMediatr.Generators.dll" Pack="true" PackagePath="analyzers\dotnet\cs" Visible="false" />
     <None Include="..\\README.md" Pack="true" PackagePath="\" />
     <None Include="..\\docs\\PUBLIC_API.md" Pack="true" PackagePath="docs\\" />
     <None Include="..\\docs\\INTERNALS.md" Pack="true" PackagePath="docs\\" />
